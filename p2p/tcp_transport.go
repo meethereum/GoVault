@@ -1,22 +1,17 @@
 package p2p
 
 import (
-	//"bytes"
 	"fmt"
 	"net"
-	"sync"
 )
 
-// a remote node over a established TCP connection
+// TCPPeer represents a remote node over an established TCP connection.
 type TCPPeer struct {
-	// conn is the underlying connection of the peer
-	conn net.Conn
-	// if we dial to a connection to a peer it is outbound
-	// if we accept it is a inbound peer
+	conn     net.Conn
 	outbound bool
 }
 
-// constructor for tcp peer
+// NewTCPPeer creates a new TCPPeer instance.
 func NewTCPPeer(conn net.Conn, outbound bool) *TCPPeer {
 	return &TCPPeer{
 		conn:     conn,
@@ -24,25 +19,46 @@ func NewTCPPeer(conn net.Conn, outbound bool) *TCPPeer {
 	}
 }
 
+// Close closes the peer connection.
+func (p *TCPPeer) Close() error {
+	return p.conn.Close()
+}
+
+// TCPTransportOpts defines configurable options for TCPTransport.
+type TCPTransportOpts struct {
+	ListenAddr    string
+	HandShakeFunc HandShakeFunc
+	Decoder       DefaultDecoder
+	OnPeer        func(Peer) error
+}
+
+// TCPTransport represents a TCP-based transport layer.
 type TCPTransport struct {
 	listenAddress string
 	listener      net.Listener
 	shakeHands    HandShakeFunc
 	Decoder       DefaultDecoder
-	peers         map[net.Addr]Peer
-	mu            sync.RWMutex
+	rpcch         chan RPC
+	OnPeer        func(Peer) error
 }
 
-func NewTCPTransport(listenAddr string) *TCPTransport {
+// NewTCPTransport creates a new TCPTransport instance with given options.
+func NewTCPTransport(opts TCPTransportOpts) *TCPTransport {
 	return &TCPTransport{
-		shakeHands: func(Peer) error {
-			return nil
-		},
-		listenAddress: listenAddr,
-		Decoder:       DefaultDecoder{},
+		listenAddress: opts.ListenAddr,
+		shakeHands:    opts.HandShakeFunc,
+		Decoder:       opts.Decoder,
+		rpcch:         make(chan RPC),
+		OnPeer:        opts.OnPeer,
 	}
 }
 
+// Consume returns a read-only channel for incoming messages.
+func (t *TCPTransport) Consume() <-chan RPC {
+	return t.rpcch
+}
+
+// ListenAndAccept starts listening for incoming TCP connections.
 func (t *TCPTransport) ListenAndAccept() error {
 	ln, err := net.Listen("tcp", t.listenAddress)
 	if err != nil {
@@ -58,14 +74,18 @@ func (t *TCPTransport) startAcceptLoop() {
 		conn, err := t.listener.Accept()
 		if err != nil {
 			fmt.Printf("TCP accept error: %s\n", err)
+			continue
 		}
 		go t.handleConn(conn)
 	}
 }
 
-type Temp struct{}
-
 func (t *TCPTransport) handleConn(conn net.Conn) {
+	var err error
+	defer func() {
+		fmt.Printf("dropping peer connection: %s", conn.RemoteAddr())
+	}()
+
 	peer := NewTCPPeer(conn, true)
 
 	if err := t.shakeHands(peer); err != nil {
@@ -74,24 +94,25 @@ func (t *TCPTransport) handleConn(conn net.Conn) {
 		return
 	}
 
-	fmt.Printf("new incoming peer : %v\n", peer)
-
-	for {
-		rpc := &RPC{}
-		lenDecoderError := 0
-
-		if err := t.Decoder.Decode(conn, rpc); err != nil {
-			lenDecoderError++
-			if lenDecoderError >= lenDecoderLimit {
-				//drop the connection
-
-			}
-			fmt.Printf("TCP error: %s\n", err)
-			continue
+	if t.OnPeer != nil {
+		if err := t.OnPeer(peer); err != nil {
+			return
 		}
-
-		rpc.From = conn.RemoteAddr()
-		fmt.Printf("message: %+v\n", rpc)
 	}
 
+	for {
+		rpc := RPC{}
+
+		err = t.Decoder.Decode(conn, &rpc)
+		if err == net.ErrClosed {
+			return
+		}
+		if err != nil {
+			fmt.Printf("TCP read error: %s\n", err)
+			continue
+		}
+		rpc.From = conn.RemoteAddr()
+		fmt.Printf("rpc: %+v\n", rpc)
+		t.rpcch <- rpc
+	}
 }
