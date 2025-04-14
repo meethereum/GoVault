@@ -2,32 +2,47 @@ package main
 
 import (
 	"bytes"
-	"fmt"
-	"os"
+	// "os"
 	"testing"
+	"io"
+	"fmt"
 )
 
 func TestPathTransformFunc(t *testing.T){
 	key:="mybestpicture"
-	pathname:=CASPathTransformFunc(key)
-	fmt.Println(pathname)
+	pathKey:=CASPathTransformFunc(key)
 	expectedPathName := "be17b/32c28/70b1c/0c73b/59949/db6a3/be781/4dd23"
-	if pathname!=expectedPathName{
-		t.Errorf("have %s and want %s",pathname,expectedPathName)
+	expectedOriginalKey:= "be17b32c2870b1c0c73b59949db6a3be7814dd23"
+	if pathKey.Pathname!=expectedPathName{
+		t.Errorf("have %s and want %s",pathKey.Pathname,expectedPathName)
 	}
+	if pathKey.Original!=expectedOriginalKey{
+		t.Errorf("have %s and want %s",pathKey.Original,expectedOriginalKey)
+	}
+	
 }
 
-func TestStore(t *testing.T){
-	opts:=StoreOpts{
+func TestStore(t *testing.T) {
+	opts := StoreOpts{
 		PathTransformFunc: CASPathTransformFunc,
 	}
-	s:=NewStore(opts)
+	s := NewStore(opts)
+	key := "momsspecials"
+	data := []byte("some jpg bytes")
 
-	data := bytes.NewReader([]byte("some jpg bytes"))
-	if err := s.writeStream("myspecialpictures1",data);err!=nil{
+	if err := s.WriteStream(key, bytes.NewReader(data)); err != nil {
 		t.Error(err)
 	}
-	if err:=os.RemoveAll("myspecialpictures1");err!=nil{
+
+	r, err := s.Read(key)
+	if err != nil {
 		t.Error(err)
+	}
+
+	b, _ := io.ReadAll(r)
+	fmt.Println(string(b))
+
+	if string(b) != string(data) {
+		t.Errorf("want %s have %s", data, b)
 	}
 }

@@ -1,15 +1,18 @@
 package main
 
 import (
+	"bytes"
+	//"crypto/md5"
 	"crypto/sha1"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"log"
 	"os"
 	"strings"
 )
 
-func CASPathTransformFunc(key string) string {
+func CASPathTransformFunc(key string) Pathkey {
 	hash:=sha1.Sum([]byte(key))
 	hashStr:= hex.EncodeToString(hash[:]) //convert byte to slice
 	blocksize:=5
@@ -21,19 +24,32 @@ func CASPathTransformFunc(key string) string {
 		paths[i] = hashStr[from:to]
 	}
 
-	return strings.Join(paths,"/")
-	
+	return Pathkey{
+		Pathname: strings.Join(paths,"/"),
+		Original:hashStr,
+	}
+
 
 }
 
-type PathTransformFunc func(string) string
+type Pathkey struct{
+	Pathname string
+	Original string
+}
+
+type PathTransformFunc func(string) Pathkey  
 
 type StoreOpts struct {
 	PathTransformFunc PathTransformFunc
 }
 
-var DefaultPathTransformFunc PathTransformFunc = func(key string) string {
+var DefaultPathTransformFunc = func(key string) string {
 	return key
+}
+
+
+func (p Pathkey) Filename() string{
+	return fmt.Sprintf("%s/%s",p.Pathname,p.Original); 
 }
 
 type Store struct {
@@ -44,23 +60,42 @@ func NewStore(opts StoreOpts) *Store {
 	return &Store{opts}
 }
 
-func (s *Store) writeStream(key string, r io.Reader) error {
-	pathName := s.PathTransformFunc(key)
+func (s *Store) Read(key string) (io.Reader, error) {
+	f, err := s.readStream(key)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
 
-	if err := os.Mkdir(pathName, os.ModePerm); err != nil {
+	buf := new(bytes.Buffer)
+	_, err = io.Copy(buf, f)
+	return buf, err
+}
+
+func (s *Store) readStream(key string) (io.ReadCloser,error){
+	pathkKey:=s.PathTransformFunc(key)
+
+	f,err:=os.Open(pathkKey.Filename())
+	if err!=nil {
+		return nil,err
+	}
+
+	return f,err
+
+}
+
+
+func (s *Store) WriteStream(key string, r io.Reader) error {
+	
+	pathKey := s.PathTransformFunc(key)
+	
+	if err := os.MkdirAll(pathKey.Pathname, os.ModePerm); err != nil {
 		return err
 	}
 
-	filename := "somefilename"
-	pathAndFilename := pathName + "/" + filename
-	_, err := os.Stat(pathAndFilename)
-	if err == nil {
-		return os.ErrExist
-	}
+	 pathAndFilename := pathKey.Filename() 
 
-	
-
-	f, err := os.Create(pathName + "/" + filename)
+	f, err := os.Create(pathAndFilename)
 	if err != nil {
 		return err
 	}
